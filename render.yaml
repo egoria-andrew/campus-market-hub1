@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: campus-market-hub-demo
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: python --version
+    startCommand: python server.py
+    healthCheckPath: /

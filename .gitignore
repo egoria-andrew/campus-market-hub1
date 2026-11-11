@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+campus_market.db
+uploads/
