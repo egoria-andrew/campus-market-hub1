@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 import hashlib
 import base64
+import hmac
 import mimetypes
 import json
 import os
@@ -11,12 +12,14 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 import webbrowser
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get("CMH_DB_PATH", ROOT / "campus_market.db"))
 UPLOADS = Path(os.environ.get("CMH_UPLOAD_DIR", ROOT / "uploads"))
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+SESSION_SECRET = os.environ.get("CMH_SESSION_SECRET", "local-demo-session-key-change-for-hosting").encode()
 LOCK = threading.Lock()
 
 def db():
@@ -32,13 +35,17 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'student');
         CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, price INTEGER NOT NULL, description TEXT NOT NULL, seller TEXT NOT NULL, emoji TEXT NOT NULL, stock INTEGER NOT NULL DEFAULT 10, active INTEGER NOT NULL DEFAULT 1, image_url TEXT);
         CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY, buyer TEXT NOT NULL, items TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'Received', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS lost_found(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, item_name TEXT NOT NULL, description TEXT NOT NULL, location TEXT NOT NULL, contact TEXT NOT NULL, reporter TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS lost_found(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, item_name TEXT NOT NULL, description TEXT NOT NULL, location TEXT NOT NULL, contact TEXT NOT NULL, contact_name TEXT, reporter TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL, location TEXT NOT NULL, starts_at TEXT NOT NULL, category TEXT NOT NULL, emoji TEXT NOT NULL, host TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS event_rsvps(id INTEGER PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES events(id), email TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(event_id,email));
         """)
         product_cols = {row[1] for row in c.execute("PRAGMA table_info(products)")}
         if "image_url" not in product_cols:
             c.execute("ALTER TABLE products ADD COLUMN image_url TEXT")
+        lost_cols = {row[1] for row in c.execute("PRAGMA table_info(lost_found)")}
+        if "contact_name" not in lost_cols:
+            c.execute("ALTER TABLE lost_found ADD COLUMN contact_name TEXT")
+            c.execute("UPDATE lost_found SET contact_name=reporter WHERE contact_name IS NULL")
         if c.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0:
             products = [
              ("Scientific Calculator", "Study", 48000, "Reliable calculator for lectures, tests and everyday problem solving.", "Campus Essentials", "🧮", 12),
@@ -62,7 +69,12 @@ def init_db():
             c.executemany("INSERT INTO events(title,description,location,starts_at,category,emoji,host) VALUES(?,?,?,?,?,?,?)", events)
 
 def pw(value): return hashlib.sha256(value.encode()).hexdigest()
-SESSIONS = {}
+
+def make_session(user):
+    payload = {"id":user["id"],"name":user["name"],"email":user["email"],"role":user["role"],"exp":int(time.time()) + 7 * 24 * 60 * 60}
+    encoded = base64.urlsafe_b64encode(json.dumps(payload,separators=(",",":")).encode()).rstrip(b"=").decode()
+    signature = hmac.new(SESSION_SECRET,encoded.encode(),hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs): super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -74,7 +86,15 @@ class Handler(SimpleHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0))
         if n > 8 * 1024 * 1024: raise ValueError("Request body is too large")
         return json.loads(self.rfile.read(n) or b"{}")
-    def user(self): return SESSIONS.get(self.headers.get("X-Session", ""))
+    def user(self):
+        token = self.headers.get("X-Session", "")
+        try:
+            encoded, signature = token.split(".",1)
+            expected = hmac.new(SESSION_SECRET,encoded.encode(),hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature,expected): return None
+            payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+            return payload if payload.get("exp",0) > int(time.time()) else None
+        except (ValueError, json.JSONDecodeError, TypeError): return None
     def do_GET(self):
         path = urlparse(self.path).path
         if path.startswith("/uploads/"):
@@ -112,10 +132,11 @@ class Handler(SimpleHTTPRequestHandler):
                     except sqlite3.IntegrityError: return self.send_json({"error":"That email is already registered"}, 400)
                 row = c.execute("SELECT id,name,email,role,password FROM users WHERE email=?", (data.get("email","").lower(),)).fetchone()
                 if not row or row["password"] != pw(data.get("password", "")): return self.send_json({"error":"Check your email and password"}, 401)
-                key = secrets.token_urlsafe(24); SESSIONS[key] = {"id":row["id"],"name":row["name"],"email":row["email"],"role":row["role"]}; return self.send_json({"token":key,"user":SESSIONS[key]})
+                session_user = {"id":row["id"],"name":row["name"],"email":row["email"],"role":row["role"]}
+                return self.send_json({"token":make_session(session_user),"user":session_user})
             u = self.user()
             if path == "/api/upload-image":
-                if not u or u["role"] != "vendor": return self.send_json({"error":"Vendor demo account required to upload product photos"},403)
+                if not u: return self.send_json({"error":"Sign in to upload a product photo"},401)
                 match = re.fullmatch(r"data:image/(jpeg|png|webp|gif);base64,([A-Za-z0-9+/=]+)", data.get("image", ""))
                 if not match: return self.send_json({"error":"Choose a PNG, JPG, WEBP or GIF image"},400)
                 mime, encoded = match.groups()
@@ -146,8 +167,10 @@ class Handler(SimpleHTTPRequestHandler):
                 if not u: return self.send_json({"error":"Sign in to post a lost or found item"}, 401)
                 required = ("kind", "item_name", "description", "location")
                 if any(not str(data.get(k, "")).strip() for k in required): return self.send_json({"error":"Please complete each field"}, 400)
-                contact = str(data.get("contact", "")).strip() or u["email"]
-                cur = c.execute("INSERT INTO lost_found(kind,item_name,description,location,contact,reporter) VALUES(?,?,?,?,?,?)", (data["kind"],data["item_name"].strip(),data["description"].strip(),data["location"].strip(),contact,u["name"]))
+                contact_name = str(data.get("contact_name", u["name"])).strip() or u["name"]
+                contact = str(data.get("contact", "")).strip()
+                if not contact: return self.send_json({"error":"Add a phone number or other contact detail"},400)
+                cur = c.execute("INSERT INTO lost_found(kind,item_name,description,location,contact,contact_name,reporter) VALUES(?,?,?,?,?,?,?)", (data["kind"],data["item_name"].strip(),data["description"].strip(),data["location"].strip(),contact,contact_name,u["name"]))
                 return self.send_json(dict(c.execute("SELECT * FROM lost_found WHERE id=?",(cur.lastrowid,)).fetchone()),201)
             if path == "/api/events":
                 if not u: return self.send_json({"error":"Sign in to share a campus event"}, 401)
@@ -166,15 +189,18 @@ class Handler(SimpleHTTPRequestHandler):
                 count = c.execute("SELECT COUNT(*) FROM event_rsvps WHERE event_id=?",(event_id,)).fetchone()[0]
                 return self.send_json({"attending":attending,"rsvp_count":count})
             if path == "/api/products":
-                if not u or u["role"] != "vendor": return self.send_json({"error":"Vendor demo account required"}, 403)
+                if not u: return self.send_json({"error":"Sign in before adding a product"},401)
                 cur = c.execute("INSERT INTO products(name,category,price,description,seller,emoji,stock,image_url) VALUES(?,?,?,?,?,?,?,?)", (data["name"],data["category"],int(data["price"]),data["description"],u["name"],data.get("emoji","✨"),int(data.get("stock",1)),data.get("image_url")))
                 return self.send_json(dict(c.execute("SELECT * FROM products WHERE id=?", (cur.lastrowid,)).fetchone()), 201)
         return self.send_json({"error":"Not found"},404)
     def do_PATCH(self):
         path = urlparse(self.path).path; u = self.user()
-        if not u or u["role"] != "vendor": return self.send_json({"error":"Vendor demo account required"},403)
+        if not u: return self.send_json({"error":"Sign in before managing products"},401)
         data = self.body(); pid = path.rsplit("/",1)[-1]
         with db() as c:
+            product = c.execute("SELECT seller FROM products WHERE id=?",(pid,)).fetchone()
+            if not product: return self.send_json({"error":"Product not found"},404)
+            if u["role"] != "vendor" and product["seller"] != u["name"]: return self.send_json({"error":"You can only manage your own listings"},403)
             c.execute("UPDATE products SET stock=?,active=?,image_url=COALESCE(?,image_url) WHERE id=?", (max(0,int(data.get("stock",0))), int(bool(data.get("active",True))), data.get("image_url"), pid))
             row = c.execute("SELECT * FROM products WHERE id=?",(pid,)).fetchone()
             return self.send_json(dict(row) if row else {"error":"Product not found"}, 200 if row else 404)

@@ -1,0 +1,24 @@
+.filters.hidden{display:none!important}
+@media(max-width:760px){
+  .top-actions .cart-btn{display:flex;align-items:center;gap:4px;padding:8px 10px;border-radius:9px;font-size:12px}
+  .top-actions .cart-btn b{margin-left:2px}
+  .bottom-nav>a,.bottom-nav>button{min-height:58px;gap:5px;font-size:10px}
+  .bottom-nav svg{width:23px;height:23px}
+  .bottom-nav .sell-tab{gap:2px;color:var(--navy);font-size:10px;font-weight:700}
+  .sell-tab-icon{width:36px;height:34px;display:grid;place-items:center;border-radius:12px;background:var(--orange);color:#fff;font-size:26px;line-height:1;box-shadow:0 4px 10px #ec720936;transform:translateY(-7px)}
+  .bottom-nav .sell-tab:before{display:none}
+  .bottom-nav .sell-tab>span:last-child{margin-top:-7px}
+  .bottom-nav span{font-size:10px}
+  .bottom-nav .active:before{top:-7px}
+  .community-action{min-width:44px;min-height:44px}
+  .community-chip,.chip{font-size:12px;padding:10px 15px;min-height:38px}
+  .filter-toggle{min-width:82px;min-height:44px;font-size:12px}
+  .search{height:48px}.search input{font-size:16px}
+  .product-art{height:150px}.product-info{padding:12px}.product-info h3{font-size:13px;min-height:36px}.seller{font-size:10px}.price{font-size:13px}.price small{font-size:9px}.add-btn{width:36px;height:36px;font-size:22px;border-radius:9px}
+  .community-heading h2,.section-head h2{font-size:29px}.community-heading p{font-size:12px}
+  .lost-card{padding:16px}.lost-card h3,.event-card h3{font-size:15px}.lost-card>p,.event-card-body>p{font-size:12px;line-height:1.6}.post-location{font-size:12px}.lost-card-foot{font-size:10px}.post-badge{font-size:10px}.post-date{font-size:10px}
+  .event-date{font-size:11px}.event-card-body{padding:13px}.event-card-foot>span{font-size:9px}.rsvp-btn{font-size:11px;min-height:38px;padding:8px 11px}
+  .modal{padding:25px 20px}.modal h2{font-size:25px}.modal p{font-size:14px}.form-field span{font-size:13px}.form-field input,.form-field select,.form-field textarea{font-size:16px;padding:12px}.wide-btn{min-height:48px;font-size:14px}.switch{font-size:13px}.close{width:38px;height:38px;font-size:20px}
+  .hero-copy>p{font-size:14px}.eyebrow{font-size:10px}.primary{min-height:44px;display:inline-flex;align-items:center;font-size:12px}.text-button{min-height:44px;font-size:12px}.trust,.trust b{font-size:11px}
+  .top-actions .icon-btn,.top-actions .login-btn{display:none}
+}

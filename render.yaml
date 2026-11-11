@@ -7,3 +7,6 @@ services:
     buildCommand: python --version
     startCommand: python server.py
     healthCheckPath: /
+    envVars:
+      - key: CMH_SESSION_SECRET
+        generateValue: true
