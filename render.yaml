@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: campus-market-hub-demo
+    name: campusmarkethub
     runtime: python
     plan: free
     region: frankfurt
